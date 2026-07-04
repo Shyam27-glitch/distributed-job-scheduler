@@ -12,6 +12,7 @@ const envSchema = z.object({
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(25_000),
   WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

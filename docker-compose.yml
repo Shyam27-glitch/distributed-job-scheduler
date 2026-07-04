@@ -38,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Must exceed DRAIN_TIMEOUT_MS so Docker's SIGKILL never truncates the graceful drain.
+    stop_grace_period: 30s
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-job_scheduler}
@@ -49,6 +51,7 @@ services:
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       DRAIN_TIMEOUT_MS: ${DRAIN_TIMEOUT_MS:-25000}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+      JOB_TIMEOUT_MS: ${JOB_TIMEOUT_MS:-30000}
 
   web:
     build:
