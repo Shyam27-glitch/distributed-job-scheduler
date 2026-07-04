@@ -1,0 +1,21 @@
+{
+  "name": "job-scheduler",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/shared",
+    "api",
+    "worker",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/shared && npm run build --workspaces --if-present",
+    "migrate": "npm run migrate -w packages/shared",
+    "migrate:down": "npm run migrate:down -w packages/shared",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

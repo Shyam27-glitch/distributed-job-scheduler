@@ -1,0 +1,24 @@
+{
+  "name": "@job-scheduler/shared",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "migrate": "node-pg-migrate -m src/db/migrations up",
+    "migrate:down": "node-pg-migrate -m src/db/migrations down",
+    "migrate:create": "node-pg-migrate -m src/db/migrations create",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.11.5",
+    "pino": "^9.2.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "node-pg-migrate": "^7.6.1",
+    "typescript": "^5.5.4",
+    "@types/pg": "^8.11.6",
+    "@types/node": "^20.14.9"
+  }
+}
