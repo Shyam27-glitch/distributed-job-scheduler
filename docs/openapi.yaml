@@ -550,3 +550,19 @@ paths:
               schema: { $ref: '#/components/schemas/Job' }
         '400': { description: Job is not dead-lettered }
         '404': { description: Not found }
+
+  /api/workers:
+    get:
+      summary: List all workers (global infrastructure, not organization-scoped)
+      responses:
+        '200': { description: OK }
+
+  /metrics:
+    get:
+      summary: Prometheus-format metrics (jobs by status, workers by status, queue depth, DLQ backlog)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain: {}

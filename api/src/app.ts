@@ -9,7 +9,9 @@ import { retryPoliciesRouter } from './routes/retryPolicies';
 import { projectQueuesRouter, queuesRouter } from './routes/queues';
 import { queueJobsRouter, jobsRouter } from './routes/jobs';
 import { queueScheduledJobsRouter, scheduledJobsRouter } from './routes/scheduledJobs';
+import { workersRouter } from './routes/workers';
 import { mountApiDocs } from './docs/swaggerSetup';
+import { renderMetrics } from './metrics';
 import { errorHandler } from './middleware/errorHandler';
 
 export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
@@ -29,6 +31,18 @@ export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
     logger.warn({ err }, 'failed to mount /api/docs (openapi.yaml not found)');
   }
 
+  if (pool) {
+    app.get('/metrics', async (_req, res, next) => {
+      try {
+        const { contentType, body } = await renderMetrics(pool);
+        res.set('Content-Type', contentType);
+        res.send(body);
+      } catch (err) {
+        next(err);
+      }
+    });
+  }
+
   if (pool && jwtSecret) {
     app.use('/api/auth', authRouter(pool, jwtSecret));
     app.use('/api/projects', projectsRouter(pool, jwtSecret));
@@ -39,6 +53,7 @@ export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
     app.use('/api/queues', queuesRouter(pool, jwtSecret));
     app.use('/api/jobs', jobsRouter(pool, jwtSecret));
     app.use('/api/scheduled-jobs', scheduledJobsRouter(pool, jwtSecret));
+    app.use('/api/workers', workersRouter(pool, jwtSecret));
   }
 
   app.use((_req, res) => {
