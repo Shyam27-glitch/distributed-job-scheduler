@@ -5,6 +5,9 @@ import type { Pool } from 'pg';
 import type { Logger } from '@job-scheduler/shared';
 import { authRouter } from './routes/auth';
 import { projectsRouter } from './routes/projects';
+import { retryPoliciesRouter } from './routes/retryPolicies';
+import { projectQueuesRouter, queuesRouter } from './routes/queues';
+import { queueJobsRouter, jobsRouter } from './routes/jobs';
 import { errorHandler } from './middleware/errorHandler';
 
 export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
@@ -21,6 +24,11 @@ export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
   if (pool && jwtSecret) {
     app.use('/api/auth', authRouter(pool, jwtSecret));
     app.use('/api/projects', projectsRouter(pool, jwtSecret));
+    app.use('/api/retry-policies', retryPoliciesRouter(pool, jwtSecret));
+    app.use('/api/projects/:projectId/queues', projectQueuesRouter(pool, jwtSecret));
+    app.use('/api/queues/:queueId/jobs', queueJobsRouter(pool, jwtSecret));
+    app.use('/api/queues', queuesRouter(pool, jwtSecret));
+    app.use('/api/jobs', jobsRouter(pool, jwtSecret));
   }
 
   app.use((_req, res) => {
