@@ -8,6 +8,7 @@ import { projectsRouter } from './routes/projects';
 import { retryPoliciesRouter } from './routes/retryPolicies';
 import { projectQueuesRouter, queuesRouter } from './routes/queues';
 import { queueJobsRouter, jobsRouter } from './routes/jobs';
+import { queueScheduledJobsRouter, scheduledJobsRouter } from './routes/scheduledJobs';
 import { errorHandler } from './middleware/errorHandler';
 
 export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
@@ -27,8 +28,10 @@ export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
     app.use('/api/retry-policies', retryPoliciesRouter(pool, jwtSecret));
     app.use('/api/projects/:projectId/queues', projectQueuesRouter(pool, jwtSecret));
     app.use('/api/queues/:queueId/jobs', queueJobsRouter(pool, jwtSecret));
+    app.use('/api/queues/:queueId/scheduled-jobs', queueScheduledJobsRouter(pool, jwtSecret));
     app.use('/api/queues', queuesRouter(pool, jwtSecret));
     app.use('/api/jobs', jobsRouter(pool, jwtSecret));
+    app.use('/api/scheduled-jobs', scheduledJobsRouter(pool, jwtSecret));
   }
 
   app.use((_req, res) => {
