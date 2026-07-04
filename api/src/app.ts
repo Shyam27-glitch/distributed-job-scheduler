@@ -9,6 +9,7 @@ import { retryPoliciesRouter } from './routes/retryPolicies';
 import { projectQueuesRouter, queuesRouter } from './routes/queues';
 import { queueJobsRouter, jobsRouter } from './routes/jobs';
 import { queueScheduledJobsRouter, scheduledJobsRouter } from './routes/scheduledJobs';
+import { mountApiDocs } from './docs/swaggerSetup';
 import { errorHandler } from './middleware/errorHandler';
 
 export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
@@ -21,6 +22,12 @@ export function createApp(logger: Logger, pool?: Pool, jwtSecret?: string) {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  try {
+    mountApiDocs(app);
+  } catch (err) {
+    logger.warn({ err }, 'failed to mount /api/docs (openapi.yaml not found)');
+  }
 
   if (pool && jwtSecret) {
     app.use('/api/auth', authRouter(pool, jwtSecret));

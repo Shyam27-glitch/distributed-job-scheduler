@@ -1,0 +1,552 @@
+openapi: 3.0.3
+info:
+  title: Distributed Job Scheduler API
+  version: 0.1.0
+  description: >
+    REST API for organizations, projects, job queues, jobs (immediate, delayed,
+    scheduled, recurring, batch), retry policies, recurring schedules, and the
+    dead letter queue. Job execution/claiming is performed by a separate worker
+    service using SELECT ... FOR UPDATE SKIP LOCKED; this API only manages
+    configuration and state, it never claims or runs jobs itself.
+servers:
+  - url: http://localhost:3000
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+    AuthResult:
+      type: object
+      properties:
+        token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string }
+            name: { type: string, nullable: true }
+            organizationId: { type: string, format: uuid }
+        organization:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        createdBy: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RetryPolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        name: { type: string }
+        strategy: { type: string, enum: [fixed, linear, exponential] }
+        baseDelayMs: { type: integer }
+        maxDelayMs: { type: integer }
+        multiplier: { type: number }
+        maxRetries: { type: integer }
+    Queue:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        priority: { type: integer }
+        concurrencyLimit: { type: integer }
+        retryPolicyId: { type: string, format: uuid }
+        isPaused: { type: boolean }
+    QueueStats:
+      type: object
+      properties:
+        queueId: { type: string, format: uuid }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+        total: { type: integer }
+    Job:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        queueId: { type: string, format: uuid }
+        scheduledJobId: { type: string, format: uuid, nullable: true }
+        parentJobId: { type: string, format: uuid, nullable: true }
+        jobType: { type: string, enum: [immediate, delayed, scheduled, recurring, batch] }
+        status:
+          type: string
+          enum: [scheduled, queued, claimed, running, completed, failed, pending_retry, dead_lettered]
+        priority: { type: integer }
+        payload: { type: object }
+        idempotencyKey: { type: string }
+        runAt: { type: string, format: date-time }
+        retryCount: { type: integer }
+        claimedByWorkerId: { type: string, format: uuid, nullable: true }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    JobExecution:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        attemptNumber: { type: integer }
+        fromStatus: { type: string, nullable: true }
+        toStatus: { type: string }
+        workerId: { type: string, format: uuid, nullable: true }
+        reason: { type: string, nullable: true }
+        occurredAt: { type: string, format: date-time }
+    ScheduledJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        queueId: { type: string, format: uuid }
+        name: { type: string }
+        cronExpression: { type: string }
+        timezone: { type: string }
+        payloadTemplate: { type: object }
+        priority: { type: integer }
+        isEnabled: { type: boolean }
+        nextRunAt: { type: string, format: date-time }
+        lastRunAt: { type: string, format: date-time, nullable: true }
+    DeadLetterEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        queueId: { type: string, format: uuid }
+        finalError: { type: string, nullable: true }
+        retryCount: { type: integer }
+        payloadSnapshot: { type: object }
+        resolved: { type: boolean }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        movedAt: { type: string, format: date-time }
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        '200': { description: OK }
+
+  /api/auth/register:
+    post:
+      summary: Register a new organization and its first (owner) user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationName, email, password]
+              properties:
+                organizationName: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '409': { description: Organization name or email already exists }
+
+  /api/auth/login:
+    post:
+      summary: Log in and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '401': { description: Invalid credentials }
+
+  /api/auth/me:
+    get:
+      summary: Get the authenticated user
+      responses:
+        '200': { description: OK }
+        '401': { description: Missing or invalid token }
+
+  /api/projects:
+    get:
+      summary: List projects in the caller's organization
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items: { $ref: '#/components/schemas/Project' }
+    post:
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '409': { description: A project with this name already exists }
+
+  /api/projects/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get a project
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '404': { description: Not found }
+    patch:
+      summary: Update a project
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string, nullable: true }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+    delete:
+      summary: Delete a project (cascades to its queues, jobs, and history)
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+
+  /api/retry-policies:
+    get:
+      summary: List retry policies in the caller's organization
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create a retry policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, strategy]
+              properties:
+                name: { type: string }
+                strategy: { type: string, enum: [fixed, linear, exponential] }
+                baseDelayMs: { type: integer, default: 1000 }
+                maxDelayMs: { type: integer, default: 3600000 }
+                multiplier: { type: number, default: 2.0 }
+                maxRetries: { type: integer, default: 3 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RetryPolicy' }
+
+  /api/projects/{projectId}/queues:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: List queues in a project
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create a queue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, retryPolicyId]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                priority: { type: integer, default: 0 }
+                concurrencyLimit: { type: integer, default: 5 }
+                retryPolicyId: { type: string, format: uuid }
+                isPaused: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Queue' }
+
+  /api/queues/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get a queue
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Queue' }
+    patch:
+      summary: Update queue config (priority, concurrency limit, retry policy, pause/resume via isPaused)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string, nullable: true }
+                priority: { type: integer }
+                concurrencyLimit: { type: integer }
+                retryPolicyId: { type: string, format: uuid }
+                isPaused: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Queue' }
+
+  /api/queues/{id}/stats:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Job counts by status for a queue
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueueStats' }
+
+  /api/queues/{id}/dead-letter:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: List dead-lettered jobs for a queue
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deadLetterEntries:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeadLetterEntry' }
+
+  /api/queues/{queueId}/jobs:
+    parameters:
+      - { name: queueId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: List jobs in a queue
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create a job (immediate, delayed, or scheduled)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jobType, idempotencyKey]
+              properties:
+                jobType: { type: string, enum: [immediate, delayed, scheduled] }
+                payload: { type: object }
+                idempotencyKey: { type: string }
+                priority: { type: integer, default: 0 }
+                delayMs: { type: integer, description: 'Required when jobType=delayed' }
+                runAt: { type: string, format: date-time, description: 'Required when jobType=scheduled' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '409': { description: A job with this idempotencyKey already exists in this queue }
+
+  /api/queues/{queueId}/jobs/batch:
+    parameters:
+      - { name: queueId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Create a batch of jobs sharing a parent_job_id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    properties:
+                      payload: { type: object }
+                      idempotencyKey: { type: string }
+                runAt: { type: string, format: date-time }
+                priority: { type: integer, default: 0 }
+      responses:
+        '201': { description: Created }
+
+  /api/queues/{queueId}/scheduled-jobs:
+    parameters:
+      - { name: queueId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: List recurring job templates for a queue
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create a recurring job template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, cronExpression]
+              properties:
+                name: { type: string }
+                cronExpression: { type: string, example: '*/5 * * * *' }
+                timezone: { type: string, default: UTC }
+                payloadTemplate: { type: object }
+                priority: { type: integer, default: 0 }
+                isEnabled: { type: boolean, default: true }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduledJob' }
+        '400': { description: Invalid cronExpression or timezone }
+
+  /api/scheduled-jobs/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get a recurring job template
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduledJob' }
+    patch:
+      summary: Update a recurring job template (cron/timezone changes recompute nextRunAt)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                cronExpression: { type: string }
+                timezone: { type: string }
+                payloadTemplate: { type: object }
+                priority: { type: integer }
+                isEnabled: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScheduledJob' }
+
+  /api/jobs/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get a job
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404': { description: Not found }
+
+  /api/jobs/{id}/executions:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Full state-transition history for a job
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  executions:
+                    type: array
+                    items: { $ref: '#/components/schemas/JobExecution' }
+
+  /api/jobs/{id}/retry:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Manually retry a dead-lettered job (resets retryCount and requeues it)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { description: Job is not dead-lettered }
+        '404': { description: Not found }

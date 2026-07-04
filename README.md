@@ -21,7 +21,7 @@ docker compose up        # or: npm run dev in api/, worker/, web/ individually
 ```
 
 - API: http://localhost:3000 (health check: `curl localhost:3000/health`)
-- API docs: http://localhost:3000/api/docs (added in a later increment)
+- API docs (Swagger UI): http://localhost:3000/api/docs
 - Metrics: http://localhost:3000/metrics (added in a later increment)
 - Web dashboard: http://localhost:5173
 
@@ -38,8 +38,16 @@ docker compose up        # or: npm run dev in api/, worker/, web/ individually
 ```bash
 npm run build   # builds all workspaces
 npm run lint     # typechecks all workspaces
-npm test         # runs tests in all workspaces
+npm test         # runs tests in all workspaces (needs postgres up + migrated)
 ```
 
-See `docs/design-decisions.md` for the reasoning behind SKIP LOCKED vs. a message broker,
-polling vs. WebSockets, at-least-once delivery, and heartbeat-based failure detection.
+Tests run against a real Postgres instance (no mocking of DB-locking behavior),
+so `docker compose up -d postgres && npm run migrate` must be done first.
+
+## Docs
+
+- `docs/architecture.md` — system diagram and worker-loop breakdown (Mermaid)
+- `docs/er-diagram.md` — full relational schema, normalization and indexing notes (Mermaid)
+- `docs/design-decisions.md` — SKIP LOCKED vs. a message broker, polling vs. WebSockets,
+  at-least-once delivery, heartbeat-based failure detection, and other trade-offs
+- `docs/openapi.yaml` — OpenAPI 3.0 spec, served at `/api/docs`

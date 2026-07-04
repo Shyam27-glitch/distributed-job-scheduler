@@ -1,7 +1,9 @@
 import type { Pool } from 'pg';
 import type { Logger } from '@job-scheduler/shared';
 import { executeJob, JobTimeoutError } from './executor';
-import { computeRetryDelayMs, type RetryPolicyConfig } from './retry';
+import { claimJobs, type ClaimedJobRow } from './claim';
+import { handleJobFailure } from './failureHandler';
+import type { RetryPolicyConfig } from './retry';
 
 interface QueueRow {
   id: string;
@@ -12,13 +14,6 @@ interface QueueRow {
   max_delay_ms: number;
   multiplier: number;
   max_retries: number;
-}
-
-interface ClaimedJobRow {
-  id: string;
-  queue_id: string;
-  payload: Record<string, unknown>;
-  retry_count: number;
 }
 
 export interface PollerOptions {
@@ -96,7 +91,7 @@ export class Poller {
           maxRetries: queue.max_retries,
         };
 
-        const claimed = await this.claimJobs(queue.id, claimLimit);
+        const claimed = await claimJobs(this.opts.pool, queue.id, this.opts.workerId, claimLimit, this.opts.logger);
         for (const job of claimed) {
           localAvailable -= 1;
           const jobPromise = this.runJob(job, retryPolicy).finally(() => this.inFlight.delete(job.id));
@@ -105,47 +100,6 @@ export class Poller {
       }
     } catch (err) {
       this.opts.logger.error({ err }, 'poll tick failed');
-    }
-  }
-
-  /**
-   * The mandatory atomic-claim query: CTE + FOR UPDATE SKIP LOCKED means two workers
-   * racing this never lock/return the same row, so a job is never claimed twice.
-   */
-  private async claimJobs(queueId: string, limit: number): Promise<ClaimedJobRow[]> {
-    const client = await this.opts.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const result = await client.query<ClaimedJobRow>(
-        `WITH candidate AS (
-           SELECT id FROM jobs
-           WHERE queue_id = $1 AND status = 'queued' AND run_at <= now()
-           ORDER BY priority DESC, run_at ASC
-           LIMIT $2
-           FOR UPDATE SKIP LOCKED
-         )
-         UPDATE jobs
-         SET status = 'claimed', claimed_by_worker_id = $3, claimed_at = now(), updated_at = now()
-         FROM candidate
-         WHERE jobs.id = candidate.id
-         RETURNING jobs.id, jobs.queue_id, jobs.payload, jobs.retry_count`,
-        [queueId, limit, this.opts.workerId],
-      );
-      for (const row of result.rows) {
-        await client.query(
-          `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, worker_id, reason)
-           VALUES ($1, $2, 'queued', 'claimed', $3, 'claimed')`,
-          [row.id, row.retry_count + 1, this.opts.workerId],
-        );
-      }
-      await client.query('COMMIT');
-      return result.rows;
-    } catch (err) {
-      await client.query('ROLLBACK');
-      this.opts.logger.error({ err, queueId }, 'claim query failed');
-      return [];
-    } finally {
-      client.release();
     }
   }
 
@@ -177,62 +131,14 @@ export class Poller {
       const message = err instanceof Error ? err.message : String(err);
       const reason = err instanceof JobTimeoutError ? 'timeout' : 'handler_error';
       try {
-        await this.handleFailure(job, retryPolicy, message, reason);
+        await handleJobFailure(pool, job, retryPolicy, this.opts.workerId, message, reason);
+        this.opts.logger.warn({ jobId: job.id }, 'job failed');
       } catch (failureErr) {
         // Never let a secondary error here escape as an unhandled rejection and
         // crash the whole worker process -- one job's bookkeeping failure must
         // not take down every other in-flight job.
         this.opts.logger.error({ jobId: job.id, err: failureErr }, 'failed to record job failure');
       }
-    }
-  }
-
-  private async handleFailure(
-    job: ClaimedJobRow,
-    retryPolicy: RetryPolicyConfig,
-    message: string,
-    reason: string,
-  ): Promise<void> {
-    const pool = this.opts.pool;
-    const newRetryCount = job.retry_count + 1;
-
-    if (newRetryCount <= retryPolicy.maxRetries) {
-      const delayMs = computeRetryDelayMs(retryPolicy, newRetryCount);
-      const nextRunAt = new Date(Date.now() + delayMs);
-      await pool.query(
-        `UPDATE jobs SET status = 'pending_retry', retry_count = $2, last_error = $3, run_at = $4, updated_at = now()
-         WHERE id = $1`,
-        [job.id, newRetryCount, message, nextRunAt],
-      );
-      await pool.query(
-        `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, worker_id, reason, metadata)
-         VALUES ($1, $2, 'running', 'pending_retry', $3, $4, $5)`,
-        [job.id, newRetryCount, this.opts.workerId, reason, JSON.stringify({ error: message, nextRunAt, delayMs })],
-      );
-      this.opts.logger.warn({ jobId: job.id, newRetryCount, delayMs }, 'job failed, retry scheduled');
-    } else {
-      await pool.query(
-        `UPDATE jobs SET status = 'dead_lettered', retry_count = $2, last_error = $3, updated_at = now() WHERE id = $1`,
-        [job.id, newRetryCount, message],
-      );
-      await pool.query(
-        `INSERT INTO dead_letter_queue (job_id, queue_id, final_error, retry_count, payload_snapshot)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (job_id) DO UPDATE SET
-           final_error = EXCLUDED.final_error,
-           retry_count = EXCLUDED.retry_count,
-           payload_snapshot = EXCLUDED.payload_snapshot,
-           resolved = false,
-           resolved_at = NULL,
-           moved_at = now()`,
-        [job.id, job.queue_id, message, newRetryCount, job.payload],
-      );
-      await pool.query(
-        `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, worker_id, reason, metadata)
-         VALUES ($1, $2, 'running', 'dead_lettered', $3, 'max_retries_exceeded', $4)`,
-        [job.id, newRetryCount, this.opts.workerId, JSON.stringify({ error: message })],
-      );
-      this.opts.logger.error({ jobId: job.id, newRetryCount }, 'job dead-lettered after exhausting retries');
     }
   }
 }
