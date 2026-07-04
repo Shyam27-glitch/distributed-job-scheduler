@@ -176,7 +176,14 @@ export class Poller {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const reason = err instanceof JobTimeoutError ? 'timeout' : 'handler_error';
-      await this.handleFailure(job, retryPolicy, message, reason);
+      try {
+        await this.handleFailure(job, retryPolicy, message, reason);
+      } catch (failureErr) {
+        // Never let a secondary error here escape as an unhandled rejection and
+        // crash the whole worker process -- one job's bookkeeping failure must
+        // not take down every other in-flight job.
+        this.opts.logger.error({ jobId: job.id, err: failureErr }, 'failed to record job failure');
+      }
     }
   }
 
@@ -210,7 +217,14 @@ export class Poller {
       );
       await pool.query(
         `INSERT INTO dead_letter_queue (job_id, queue_id, final_error, retry_count, payload_snapshot)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (job_id) DO UPDATE SET
+           final_error = EXCLUDED.final_error,
+           retry_count = EXCLUDED.retry_count,
+           payload_snapshot = EXCLUDED.payload_snapshot,
+           resolved = false,
+           resolved_at = NULL,
+           moved_at = now()`,
         [job.id, job.queue_id, message, newRetryCount, job.payload],
       );
       await pool.query(
