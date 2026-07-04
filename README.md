@@ -22,7 +22,7 @@ docker compose up        # or: npm run dev in api/, worker/, web/ individually
 
 - API: http://localhost:3000 (health check: `curl localhost:3000/health`)
 - API docs (Swagger UI): http://localhost:3000/api/docs
-- Metrics: http://localhost:3000/metrics (added in a later increment)
+- Metrics: http://localhost:3000/metrics
 - Web dashboard: http://localhost:5173
 
 ## Repository layout
