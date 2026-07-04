@@ -60,5 +60,13 @@ export function queuesRouter(pool: Pool, jwtSecret: string): Router {
     }),
   );
 
+  router.get(
+    '/:id/dead-letter',
+    asyncHandler(async (req, res) => {
+      const entries = await queueService.listDeadLetterEntries(pool, req.user!.organizationId, req.params.id);
+      res.json({ deadLetterEntries: entries });
+    }),
+  );
+
   return router;
 }

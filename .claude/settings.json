@@ -1,17 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Read", "Edit", "Write",
-      "Bash(npm *)", "Bash(npx *)", "Bash(node *)",
-      "Bash(git status)", "Bash(git diff)", "Bash(git log *)",
-      "Bash(git add *)", "Bash(git commit *)",
-      "Bash(docker compose *)", "Bash(docker build *)"
+      "Read",
+      "Edit",
+      "Write",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(git status)",
+      "Bash(git diff)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(docker compose *)",
+      "Bash(docker build *)"
     ],
     "deny": [
       "Read(.env*)",
       "Bash(rm -rf *)",
-      "Bash(sudo *)",
-      "Bash(git push *)"
+      "Bash(sudo *)"
     ]
   }
 }

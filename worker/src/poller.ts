@@ -1,11 +1,17 @@
 import type { Pool } from 'pg';
 import type { Logger } from '@job-scheduler/shared';
 import { executeJob, JobTimeoutError } from './executor';
+import { computeRetryDelayMs, type RetryPolicyConfig } from './retry';
 
 interface QueueRow {
   id: string;
   concurrency_limit: number;
   priority: number;
+  strategy: RetryPolicyConfig['strategy'];
+  base_delay_ms: number;
+  max_delay_ms: number;
+  multiplier: number;
+  max_retries: number;
 }
 
 interface ClaimedJobRow {
@@ -62,7 +68,12 @@ export class Poller {
       if (localAvailable <= 0) return;
 
       const queuesResult = await this.opts.pool.query<QueueRow>(
-        'SELECT id, concurrency_limit, priority FROM queues WHERE is_paused = false ORDER BY priority DESC',
+        `SELECT q.id, q.concurrency_limit, q.priority,
+                rp.strategy, rp.base_delay_ms, rp.max_delay_ms, rp.multiplier, rp.max_retries
+         FROM queues q
+         JOIN retry_policies rp ON rp.id = q.retry_policy_id
+         WHERE q.is_paused = false
+         ORDER BY q.priority DESC`,
       );
 
       for (const queue of queuesResult.rows) {
@@ -77,10 +88,18 @@ export class Poller {
         const claimLimit = Math.min(localAvailable, queueRemaining);
         if (claimLimit <= 0) continue;
 
+        const retryPolicy: RetryPolicyConfig = {
+          strategy: queue.strategy,
+          baseDelayMs: queue.base_delay_ms,
+          maxDelayMs: queue.max_delay_ms,
+          multiplier: Number(queue.multiplier),
+          maxRetries: queue.max_retries,
+        };
+
         const claimed = await this.claimJobs(queue.id, claimLimit);
         for (const job of claimed) {
           localAvailable -= 1;
-          const jobPromise = this.runJob(job).finally(() => this.inFlight.delete(job.id));
+          const jobPromise = this.runJob(job, retryPolicy).finally(() => this.inFlight.delete(job.id));
           this.inFlight.set(job.id, jobPromise);
         }
       }
@@ -130,7 +149,7 @@ export class Poller {
     }
   }
 
-  private async runJob(job: ClaimedJobRow): Promise<void> {
+  private async runJob(job: ClaimedJobRow, retryPolicy: RetryPolicyConfig): Promise<void> {
     const pool = this.opts.pool;
     try {
       await pool.query(`UPDATE jobs SET status = 'running', started_at = now(), updated_at = now() WHERE id = $1`, [
@@ -157,16 +176,49 @@ export class Poller {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const reason = err instanceof JobTimeoutError ? 'timeout' : 'handler_error';
-      await pool.query(`UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`, [
-        job.id,
-        message,
-      ]);
+      await this.handleFailure(job, retryPolicy, message, reason);
+    }
+  }
+
+  private async handleFailure(
+    job: ClaimedJobRow,
+    retryPolicy: RetryPolicyConfig,
+    message: string,
+    reason: string,
+  ): Promise<void> {
+    const pool = this.opts.pool;
+    const newRetryCount = job.retry_count + 1;
+
+    if (newRetryCount <= retryPolicy.maxRetries) {
+      const delayMs = computeRetryDelayMs(retryPolicy, newRetryCount);
+      const nextRunAt = new Date(Date.now() + delayMs);
+      await pool.query(
+        `UPDATE jobs SET status = 'pending_retry', retry_count = $2, last_error = $3, run_at = $4, updated_at = now()
+         WHERE id = $1`,
+        [job.id, newRetryCount, message, nextRunAt],
+      );
       await pool.query(
         `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, worker_id, reason, metadata)
-         VALUES ($1, $2, 'running', 'failed', $3, $4, $5)`,
-        [job.id, job.retry_count + 1, this.opts.workerId, reason, JSON.stringify({ error: message })],
+         VALUES ($1, $2, 'running', 'pending_retry', $3, $4, $5)`,
+        [job.id, newRetryCount, this.opts.workerId, reason, JSON.stringify({ error: message, nextRunAt, delayMs })],
       );
-      this.opts.logger.error({ jobId: job.id, err }, 'job failed');
+      this.opts.logger.warn({ jobId: job.id, newRetryCount, delayMs }, 'job failed, retry scheduled');
+    } else {
+      await pool.query(
+        `UPDATE jobs SET status = 'dead_lettered', retry_count = $2, last_error = $3, updated_at = now() WHERE id = $1`,
+        [job.id, newRetryCount, message],
+      );
+      await pool.query(
+        `INSERT INTO dead_letter_queue (job_id, queue_id, final_error, retry_count, payload_snapshot)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [job.id, job.queue_id, message, newRetryCount, job.payload],
+      );
+      await pool.query(
+        `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, worker_id, reason, metadata)
+         VALUES ($1, $2, 'running', 'dead_lettered', $3, 'max_retries_exceeded', $4)`,
+        [job.id, newRetryCount, this.opts.workerId, JSON.stringify({ error: message })],
+      );
+      this.opts.logger.error({ jobId: job.id, newRetryCount }, 'job dead-lettered after exhausting retries');
     }
   }
 }

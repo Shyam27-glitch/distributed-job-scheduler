@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
-import { conflict, notFound } from '../errors';
+import { badRequest, conflict, notFound } from '../errors';
 import { getQueueScoped } from './queueService';
 import type { CreateBatchJobInput, CreateJobInput, ListJobsQuery } from '../validators/jobValidators';
 
@@ -137,6 +137,70 @@ export async function getJobScoped(pool: Pool, organizationId: string, jobId: st
   const row = result.rows[0];
   if (!row) throw notFound('job not found');
   return toJob(row);
+}
+
+export interface JobExecutionRow {
+  id: string;
+  job_id: string;
+  attempt_number: number;
+  from_status: string | null;
+  to_status: string;
+  worker_id: string | null;
+  reason: string | null;
+  metadata: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export async function getJobExecutions(pool: Pool, organizationId: string, jobId: string) {
+  await getJobScoped(pool, organizationId, jobId);
+  const result = await pool.query<JobExecutionRow>(
+    'SELECT * FROM job_executions WHERE job_id = $1 ORDER BY occurred_at ASC',
+    [jobId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    jobId: row.job_id,
+    attemptNumber: row.attempt_number,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    workerId: row.worker_id,
+    reason: row.reason,
+    metadata: row.metadata,
+    occurredAt: row.occurred_at,
+  }));
+}
+
+export async function retryDeadLetteredJob(pool: Pool, organizationId: string, jobId: string) {
+  const job = await getJobScoped(pool, organizationId, jobId);
+  if (job.status !== 'dead_lettered') {
+    throw badRequest('only dead-lettered jobs can be retried this way');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query<JobRow>(
+      `UPDATE jobs SET status = 'queued', retry_count = 0, run_at = now(), last_error = NULL, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [jobId],
+    );
+    await client.query(
+      `UPDATE dead_letter_queue SET resolved = true, resolved_at = now() WHERE job_id = $1`,
+      [jobId],
+    );
+    await client.query(
+      `INSERT INTO job_executions (job_id, attempt_number, from_status, to_status, reason)
+       VALUES ($1, 1, 'dead_lettered', 'queued', 'manual_retry')`,
+      [jobId],
+    );
+    await client.query('COMMIT');
+    return toJob(result.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 function isUniqueViolation(err: unknown): boolean {

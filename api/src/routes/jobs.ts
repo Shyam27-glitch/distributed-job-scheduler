@@ -53,5 +53,21 @@ export function jobsRouter(pool: Pool, jwtSecret: string): Router {
     }),
   );
 
+  router.get(
+    '/:id/executions',
+    asyncHandler(async (req, res) => {
+      const executions = await jobService.getJobExecutions(pool, req.user!.organizationId, req.params.id);
+      res.json({ executions });
+    }),
+  );
+
+  router.post(
+    '/:id/retry',
+    asyncHandler(async (req, res) => {
+      const job = await jobService.retryDeadLetteredJob(pool, req.user!.organizationId, req.params.id);
+      res.json(job);
+    }),
+  );
+
   return router;
 }

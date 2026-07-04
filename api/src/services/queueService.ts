@@ -152,6 +152,37 @@ export async function getQueueStats(pool: Pool, organizationId: string, queueId:
   return { queueId, counts, total };
 }
 
+export interface DeadLetterRow {
+  id: string;
+  job_id: string;
+  queue_id: string;
+  final_error: string | null;
+  retry_count: number;
+  payload_snapshot: Record<string, unknown>;
+  resolved: boolean;
+  resolved_at: string | null;
+  moved_at: string;
+}
+
+export async function listDeadLetterEntries(pool: Pool, organizationId: string, queueId: string) {
+  await getQueueScoped(pool, organizationId, queueId);
+  const result = await pool.query<DeadLetterRow>(
+    'SELECT * FROM dead_letter_queue WHERE queue_id = $1 ORDER BY moved_at DESC',
+    [queueId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    jobId: row.job_id,
+    queueId: row.queue_id,
+    finalError: row.final_error,
+    retryCount: row.retry_count,
+    payloadSnapshot: row.payload_snapshot,
+    resolved: row.resolved,
+    resolvedAt: row.resolved_at,
+    movedAt: row.moved_at,
+  }));
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }
